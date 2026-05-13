@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>잠수함 부력 제어 시스템 - 터치 최적화</title>
+    <style>
+        /* 텍스트 드래그 방지 및 기본 레이아웃 */
+        body { 
+            font-family: 'Malgun Gothic', sans-serif; 
+            background-color: #020617; 
+            color: white; 
+            display: flex; 
+            flex-direction: column; 
+            align-items: center; 
+            margin: 0; 
+            overflow: hidden;
+            -webkit-user-select: none; /* 크롬, 사파리 드래그 방지 */
+            -moz-user-select: none;    /* 파이어폭스 드래그 방지 */
+            -ms-user-select: none;     /* IE 드래그 방지 */
+            user-select: none;         /* 표준 드래그 방지 */
+        }
+        canvas { background: linear-gradient(to bottom, #0ea5e9 0%, #38bdf8 30%, #1e3a8a 70%, #172554 100%); border-bottom: 2px solid #38bdf8; }
+        .ui-panel { position: absolute; bottom: 20px; width: 90%; background: rgba(15, 23, 42, 0.95); padding: 20px; border-radius: 15px; border: 1px solid #334155; backdrop-filter: blur(10px); }
+        .data-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 15px; text-align: center; }
+        .card { background: #1e293b; padding: 10px; border-radius: 8px; border-top: 3px solid #60a5fa; box-shadow: inset 0 0 10px rgba(0,0,0,0.5); }
+        .control-grid { display: grid; grid-template-columns: 1.5fr 1fr; gap: 20px; align-items: center; }
+        .valve-control { display: flex; align-items: center; justify-content: center; gap: 15px; background: #334155; padding: 10px; border-radius: 10px; border: 1px solid #475569; }
+        
+        /* 개선된 버튼 디자인 */
+        .btn { 
+            background: linear-gradient(180deg, #3b82f6 0%, #1d4ed8 100%);
+            color: white; 
+            border: 1px solid #1e40af;
+            padding: 15px; 
+            border-radius: 12px; 
+            cursor: pointer; 
+            font-size: 18px; 
+            font-weight: bold; 
+            transition: all 0.1s; 
+            width: 100%; 
+            box-shadow: 0 5px 0 #1e3a8a, 0 10px 20px rgba(0,0,0,0.3);
+            text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+            touch-action: none; /* 터치 시 브라우저 기본 동작 방지 */
+        }
+        .btn:active, .btn.pressing { 
+            transform: translateY(4px); 
+            box-shadow: 0 1px 0 #1e3a8a;
+            background: linear-gradient(180deg, #1d4ed8 0%, #1e3a8a 100%);
+        }
+        .btn:disabled { opacity: 0.3; cursor: not-allowed; box-shadow: none; transform: none; }
+        
+        .highlight { font-weight: bold; color: #60a5fa; }
+        .switch { position: relative; display: inline-block; width: 60px; height: 30px; }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #1e293b; transition: .4s; border-radius: 34px; border: 2px solid #94a3b8; }
+        .slider:before { position: absolute; content: ""; height: 20px; width: 20px; left: 4px; bottom: 3px; background-color: white; transition: .4s; border-radius: 50%; }
+        input:checked + .slider { background-color: #ef4444; }
+        input:checked + .slider:before { transform: translateX(30px); }
+    </style>
+</head>
+<body>
+    <h2 style="margin-top: 10px;">🚢 잠수함 밸러스트 시스템 (정밀 수동 제어)</h2>
+    <canvas id="subCanvas"></canvas>
+    <div class="ui-panel">
+        <div class="data-grid">
+            <div class="card">현재 수심: <span id="depthVal" class="highlight">0</span> m</div>
+            <div class="card">탱크 수위: <span id="waterVal" class="highlight">20</span> %</div>
+            <div class="card">부력 평형: <span id="balanceVal" class="highlight">0</span> %</div>
+            <div class="card">운행 상태: <span id="status" class="highlight">준비 완료</span></div>
+        </div>
+        <div class="control-grid">
+            <div class="valve-control">
+                <span style="font-weight:bold;">윗밸브: 닫힘</span>
+                <label class="switch"><input type="checkbox" id="ventToggle"><span class="slider"></span></label>
+                <span style="font-weight:bold;">열림</span>
+            </div>
+            <button class="btn" id="blowBtn">압축공기 주입 (Push)</button>
+        </div>
+    </div>
+    <script>
+        const canvas = document.getElementById('subCanvas');
+        const ctx = canvas.getContext('2d');
+        const ventToggle = document.getElementById('ventToggle');
+        const blowBtn = document.getElementById('blowBtn');
+        canvas.width = window.innerWidth; canvas.height = window.innerHeight * 0.7;
+        const seaLevelY = canvas.height * 0.3; const seabedY = canvas.height * 0.9;
+        
+        let sub = { x: canvas.width / 2, y: seaLevelY - 40, w: 440, h: 120, velY: 0 };
+        let ballast = { water: 20, maxWater: 100, isVentOpen: false, isBlowing: false, ventAngle: 0 };
+
+        ventToggle.onchange = () => { ballast.isVentOpen = ventToggle.checked; };
+
+        // [핵심] 다양한 장치(PC, 태블릿, 폰)에서 꾹 누르기 대응
+        const startBlowing = (e) => {
+            e.preventDefault(); // 텍스트 선택 및 우클릭 방지
+            if(!ballast.isVentOpen) {
+                ballast.isBlowing = true;
+                blowBtn.classList.add('pressing');
+            }
+        };
+        const stopBlowing = () => {
+            ballast.isBlowing = false;
+            blowBtn.classList.remove('pressing');
+        };
+
+        // 마우스 이벤트
+        blowBtn.addEventListener('mousedown', startBlowing);
+        window.addEventListener('mouseup', stopBlowing); // 버튼 밖에서 떼도 멈추도록 window에 등록
+
+        // 터치 이벤트 (모바일/태블릿)
+        blowBtn.addEventListener('touchstart', startBlowing);
+        blowBtn.addEventListener('touchend', stopBlowing);
+        blowBtn.addEventListener('touchcancel', stopBlowing);
+
+        function update() {
+            if (ballast.isVentOpen) {
+                if (ballast.ventAngle < Math.PI / 1.8) ballast.ventAngle += 0.08;
+                if (ballast.water < ballast.maxWater) ballast.water += 0.2;
+                ballast.isBlowing = false; // 윗밸브 열리면 강제 중지
+            } else {
+                if (ballast.ventAngle > 0) ballast.ventAngle -= 0.08;
+                if (ballast.isBlowing && ballast.water > 0) ballast.water -= 0.5;
+            }
+
+            const totalWeight = 1200 + (ballast.water * 10);
+            let submergedRatio = Math.min(1, Math.max(0, (sub.y + sub.h/2 - seaLevelY) / sub.h));
+            const buoyancy = 1700 * submergedRatio;
+            let netForce = totalWeight - buoyancy;
+
+            if (!ballast.isVentOpen && !ballast.isBlowing && Math.abs(netForce) < 15) {
+                netForce = 0; sub.velY *= 0.85;
+            }
+
+            sub.velY += netForce * 0.001; sub.velY *= 0.96; sub.y += sub.velY;
+            if (sub.y < seaLevelY - 70) { sub.y = seaLevelY - 70; sub.velY = 0; }
+            if (sub.y + sub.h/2 > seabedY) { sub.y = seabedY - sub.h/2; sub.velY = 0; }
+
+            document.getElementById('depthVal').innerText = Math.max(0, (sub.y - seaLevelY + 50) / 10).toFixed(1);
+            document.getElementById('waterVal').innerText = Math.floor(ballast.water);
+            document.getElementById('balanceVal').innerText = Math.abs(Math.floor((buoyancy / totalWeight) * 100));
+            document.getElementById('status').innerText = netForce > 10 ? "잠항 중" : (netForce < -10 ? "부상 중" : "정지 잠항 중");
+            
+            blowBtn.disabled = ballast.isVentOpen;
+            draw(); requestAnimationFrame(update);
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = "rgba(10, 20, 40, 0.8)"; ctx.fillRect(0, seaLevelY, canvas.width, canvas.height - seaLevelY);
+            const sx = sub.x, sy = sub.y;
+            ctx.fillStyle = "#1e293b"; ctx.fillRect(sx - sub.w/2 - 10, sy - 20, 20, 40);
+            ctx.fillStyle = "#fbbf24"; ctx.beginPath(); ctx.ellipse(sx - sub.w/2 - 15, sy, 10, 45, Math.sin(Date.now()/100), 0, Math.PI*2); ctx.fill();
+            let hullGrad = ctx.createLinearGradient(sx, sy - sub.h/2, sx, sy + sub.h/2);
+            hullGrad.addColorStop(0, "#475569"); hullGrad.addColorStop(0.4, "#1e293b"); hullGrad.addColorStop(1, "#0f172a");
+            ctx.fillStyle = hullGrad; ctx.beginPath(); ctx.ellipse(sx, sy, sub.w/2, sub.h/2, 0, 0, Math.PI*2); ctx.fill();
+            for(let i=0; i<3; i++) {
+                ctx.fillStyle = "#0ea5e9"; ctx.beginPath(); ctx.arc(sx + 50 + (i*50), sy - 15, 8, 0, Math.PI*2); ctx.fill();
+                ctx.strokeStyle = "#94a3b8"; ctx.lineWidth = 2; ctx.stroke();
+            }
+            ctx.fillStyle = "#1e293b"; ctx.roundRect(sx - 40, sy - 105, 80, 70, 10); ctx.fill();
+            const tx = sx - 180, ty = sy - 30, tw = 200, th = 85;
+            ctx.fillStyle = "#020617"; ctx.fillRect(tx, ty, tw, th);
+            ctx.fillStyle = "rgba(56, 189, 248, 0.6)"; ctx.fillRect(tx, ty + th - (th * ballast.water/100), tw, th * ballast.water/100);
+            ctx.save(); ctx.translate(tx + 40, ty); ctx.rotate(-ballast.ventAngle);
+            ctx.fillStyle = "#475569"; ctx.fillRect(-5, -10, 60, 15); ctx.strokeStyle = "#f87171"; ctx.strokeRect(-5, -10, 60, 15); ctx.restore();
+            
+            if (ballast.isBlowing) {
+                ctx.strokeStyle = "rgba(255, 255, 255, 0.7)"; ctx.lineWidth = 2;
+                for(let i=0; i<6; i++) {
+                    let flow = (Date.now()/4 + i*15) % th;
+                    ctx.beginPath(); ctx.moveTo(tx + 40 + (i*25), ty + flow); ctx.lineTo(tx + 40 + (i*25), ty + flow + 15); ctx.stroke();
+                }
+            }
+            if (ballast.isVentOpen) {
+                ctx.fillStyle = "rgba(255, 255, 255, 0.4)";
+                for(let i=0; i<5; i++) { ctx.beginPath(); ctx.arc(tx + 70, ty - 30 - (Date.now()/50 + i*20)%80, 3+i, 0, Math.PI*2); ctx.fill(); }
+            }
+            ctx.strokeStyle = "#475569"; ctx.lineWidth = 5; ctx.strokeRect(tx, ty, tw, th);
+        }
+        update();
+    </script>
+</body>
+</html>
